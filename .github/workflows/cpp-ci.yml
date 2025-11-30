@@ -1,0 +1,85 @@
+name = "SecuCore-Engine"
+
+on:
+  push:
+    branches: ["main" , "master"]
+  pull_request:
+    branches: ["main" , "master"]
+
+
+jobs:
+  build-test-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      -name: Checkout Repository
+       uses: actions/checkout@v4
+
+      -name: Install Build and Security Tools
+       run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build \
+            clang clang-tidy cppcheck \
+            pkg-config
+
+      -name: Config CMake
+       run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      -name: Build
+       run: |
+          cmake --build build --config Release
+
+
+
+      -name: Run tests
+       run: |
+          cd build 
+          ctest --output-on-failure || exit 1
+
+      -name: Run cppcheck
+       run: |
+          cppcheck \
+            --enable=all \
+            --std=c++17 \
+            --inline-suppr \
+            --suppress=missingIncludeSystem \
+            --error-exitcode=1 \
+            src include || exit 1
+
+      # SAST (clang-tidy)
+      -name: Run clang-tidy
+       run: |
+        if [ ! -f build/compile_commands.json ]; then
+          cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        fi
+
+        find src -name '*.cpp' > clang-tidy-files.txt
+        while read file; do
+          echo "Running clang-tidy on $file"
+          clang-tidy "$file" \
+              --warnings-as-errors='*' \
+              -p build || exit 1
+        done < clang-tidy-files.txt
+
+      #Git Leaks
+      -name: Run GitLeaks
+       uses: gitleaks/gitleaks-action@v2
+       with:
+         args: detect --source . --no-git -v
+      
+      # Dependency Scanning / FS scan with Trivy
+      -name: Install Trivy
+       run: |
+          sudo apt-get install -y wget
+          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.57.1_Linux-64bit.deb -O trivy.deb
+          sudo dpkg -i trivy.deb
+
+      -name: Run trivy filesystem scan
+       run: |
+          trivy fs . --exit-code 1 -- severity CRITICAL,HIGH || exit 1
+         
+      
