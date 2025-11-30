@@ -5,74 +5,101 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
   build-test-scan:
     runs-on: ubuntu-latest
 
     steps:
+      # 1) Checkout source code
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # 2) Install build + security tools
       - name: Install Build and Security Tools
         run: |
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y \
             build-essential cmake ninja-build \
             clang clang-tidy cppcheck \
-            pkg-config wget
+            pkg-config wget gnupg
 
+      # 3) Configure CMake (generate build system + compile_commands.json)
       - name: Configure CMake
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
+      # 4) Build project
       - name: Build
         run: |
           cmake --build build --config Release
 
+      # 5) Run tests (if any)
       - name: Run tests
         run: |
           cd build
-          ctest --output-on-failure
+          if ls | grep -q "CTestTestfile.cmake"; then
+            ctest --output-on-failure
+          else
+            echo "No CTest tests found, skipping."
+          fi
 
+      # 6) Run cppcheck (SAST #1)
       - name: Run cppcheck
         run: |
-          cppcheck \
-            --enable=all \
-            --std=c++17 \
-            --inline-suppr \
-            --suppress=missingIncludeSystem \
-            --error-exitcode=1 \
-            src include
+          if [ -d src ]; then
+            cppcheck \
+              --enable=all \
+              --std=c++17 \
+              --inline-suppr \
+              --suppress=missingIncludeSystem \
+              --error-exitcode=1 \
+              src include
+          else
+            echo "No src directory found, skipping cppcheck."
+          fi
 
+      # 7) Run clang-tidy (SAST #2)
       - name: Run clang-tidy
         run: |
           if [ ! -f build/compile_commands.json ]; then
             cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           fi
 
-          find src -name '*.cpp' > clang-tidy-files.txt || true
+          if [ -d src ]; then
+            find src -name '*.cpp' > clang-tidy-files.txt || true
 
-          while read file; do
-            [ -z "$file" ] && continue
-            echo "Running clang-tidy on $file"
-            clang-tidy "$file" \
-              --warnings-as-errors='*' \
-              -p build
-          done < clang-tidy-files.txt
+            while read file; do
+              [ -z "$file" ] && continue
+              echo "Running clang-tidy on $file"
+              clang-tidy "$file" \
+                --warnings-as-errors='*' \
+                -p build
+            done < clang-tidy-files.txt
+          else
+            echo "No src directory found, skipping clang-tidy."
+          fi
 
-      - name: Run GitLeaks
+      # 8) Secret scanning - Gitleaks
+      - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         with:
           args: detect --source . --no-git -v
 
+      # 9) Install Trivy (latest) for dependency / FS scan
       - name: Install Trivy
         run: |
-          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.57.1_Linux-64bit.deb -O trivy.deb
-          sudo dpkg -i trivy.deb
+          sudo apt-get update -y
+          sudo apt-get install -y wget gnupg
+          wget -qO- https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
 
+      # 10) Trivy filesystem scan: flags HIGH+CRITICAL issues
       - name: Run Trivy filesystem scan
         run: |
           trivy fs . --exit-code 1 --severity CRITICAL,HIGH
