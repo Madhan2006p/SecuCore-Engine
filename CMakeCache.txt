@@ -276,6 +276,9 @@ pkgcfg_lib__OPENSSL_crypto:FILEPATH=/usr/lib/x86_64-linux-gnu/libcrypto.so
 //Path to a library.
 pkgcfg_lib__OPENSSL_ssl:FILEPATH=/usr/lib/x86_64-linux-gnu/libssl.so
 
+//No help, variable specified on the command line.
+rogon_DIR:UNINITIALIZED=/usr/local/lib/cmake/Drogon/DrogonConfig.cmake
+
 
 ########################
 # INTERNAL cache entries
